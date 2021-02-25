@@ -1,0 +1,38 @@
+menu "Configuration"
+	depends on PACKAGE_ecdaa
+
+	config ECDAA_TPM_SUPPORT
+		bool "TPM support"
+		default y
+		help
+		  Support using a TPM 2.0 for DAA signatures.
+
+	config ECDAA_CURVE_BN254
+		bool "BN254"
+		select AMCL_CURVE_BN254
+
+	config ECDAA_CURVE_BN254CX
+		bool "BN254CX"
+		select AMCL_CURVE_BN254CX
+
+	config ECDAA_CURVE_BLS383
+		bool "BLS383"
+		select AMCL_CURVE_BLS383
+
+	config ECDAA_CURVE_FP256BN
+		select AMCL_CURVE_FP256BN
+		bool "FP256BN"
+
+	config ECDAA_BENCHMARKS
+		bool "Benchmarks"
+		default n
+		help
+		  Build benchmarks
+
+	config ECDAA_TOOL
+		bool "CLI Tool"
+		default n
+		help
+		  Install CLI tool to work with DAA keys and signatures
+
+endmenu
