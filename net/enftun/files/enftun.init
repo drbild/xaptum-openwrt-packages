@@ -1,0 +1,66 @@
+#!/bin/bash /etc/rc.common
+
+START=90
+STOP=10
+
+USE_PROCD=1
+NAME=enf0
+
+wait_for_iface() {
+    local i=0
+    local res
+    while [ $i -lt 50 ]; do # 5 seconds
+        res=$(ip -o link show dev $1 2>/dev/null)
+        [ -n "$res" ] && return 0
+        sleep 1
+        i=$[$i+1]
+    done
+    return 1
+}
+
+wait_for_iface_up() {
+    local i=0
+    local res
+    while [ $i -lt 50 ]; do # 5 seconds
+        res=$(ip -o link show up dev $1)
+        [ -n "$res" ] && return 0
+        sleep 1
+        i=$[$i+1]
+    done
+    return 1
+}
+
+setup_enftun() {
+    modprobe tun >/dev/null 2>&1 || true
+
+    /sbin/ip tuntap add mode tun ${NAME}
+    wait_for_iface ${NAME}
+
+    /sbin/ip link set mtu 1280 dev ${NAME}
+    /sbin/ip link set dev ${NAME} up
+    wait_for_iface_up ${NAME}
+
+    cd $CONFIG_DIR
+}
+
+cleanup_enftun() {
+    /sbin/ip tuntap del mode tun ${NAME}
+}
+
+start_service() {
+    procd_open_instance
+
+    setup_enftun
+
+    procd_set_param command /usr/bin/enftun -c /etc/enftun/${NAME}.conf
+    procd_set_param pidfile /var/run/enftun.${NAME}.pid
+    procd_set_param respawn "60 5 0"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+
+    procd_close_instance
+}
+
+stop_service() {
+    cleanup_enftun
+}

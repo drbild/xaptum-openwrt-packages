@@ -1,0 +1,24 @@
+From 5fb18584095bf763b9d32f7b0d412a57af886e62 Mon Sep 17 00:00:00 2001
+From: "David R. Bild" <david.bild@xaptum.com>
+Date: Thu, 4 Mar 2021 15:34:08 -0600
+Subject: [PATCH] keygen: flush stdout after prompt
+
+---
+ keygen/src/main.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/keygen/src/main.c b/keygen/src/main.c
+index c35c04f..2b8452b 100644
+--- a/keygen/src/main.c
++++ b/keygen/src/main.c
+@@ -158,6 +158,7 @@ static int prompt_user(const char *username, const char *network, const char *cf
+     printf("Key target file: %s\n", key);
+ 
+     printf("Enter y to continue, n to exit: ");
++    fflush(stdout);
+     if (scanf("%c",&ch) < 0) {
+         return 0;
+     }
+-- 
+2.29.2
+

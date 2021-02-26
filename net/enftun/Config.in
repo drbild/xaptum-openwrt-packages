@@ -1,0 +1,22 @@
+menu "Configuration"
+	depends on PACKAGE_enftun
+
+	config ENFTUN_TPM_SUPPORT
+		bool "TPM support"
+		default y
+		help
+		  Support using a TPM 2.0 for private keys.
+
+	config ENFTUN_XTT_SUPPORT
+		bool "XTT support"
+		default y
+		help
+		  Support using the XTT provisioning protocol.
+
+	config ENFTUN_KEYGEN_SUPPORT
+		bool "keygen utility"
+		default n
+		help
+		  Build the enftun keygen utility
+
+endmenu
