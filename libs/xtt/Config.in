@@ -1,0 +1,16 @@
+menu "Configuration"
+	depends on PACKAGE_xtt
+
+	config XTT_TPM_SUPPORT
+		bool "TPM support"
+		default y
+		help
+		  Support using a TPM 2.0 for DAA signatures.
+
+	config XTT_TOOL
+		bool "CLI tool"
+		default n
+		help
+		  Install a CLI tool to work with XTT keys and certs.
+
+endmenu
