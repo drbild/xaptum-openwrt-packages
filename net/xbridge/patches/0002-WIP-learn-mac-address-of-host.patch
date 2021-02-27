@@ -1,0 +1,43 @@
+From ebe3f12b99e9415080c2b3a5953d2a27a8b857aa Mon Sep 17 00:00:00 2001
+From: "David R. Bild" <david.bild@xaptum.com>
+Date: Sun, 28 Feb 2021 17:51:42 -0600
+Subject: [PATCH 2/3] WIP: learn mac address of host
+
+---
+ src/xbridge.c | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/src/xbridge.c b/src/xbridge.c
+index f4f6756..07d0557 100644
+--- a/src/xbridge.c
++++ b/src/xbridge.c
+@@ -164,6 +164,13 @@ void sendPacket(const struct pcapDeviceInfo *iface, int len, const u_char *data)
+         break;
+ 
+     case eL2Strip: // Strip L2 data when sending packets to enf0
++        if (0 == have_eheader) {
++            // Copy prepared Ethernet header to buf just once
++            memcpy(eHeader.ether_dhost, ((struct ether_header*)data)->ether_shost, 6);
++            memcpy(buf, &eHeader, sizeof(eHeader));
++            have_eheader = 1;
++        }
++
+         if (ntohs(((struct ether_header*)data)->ether_type) == ETHERTYPE_IPV6) {
+             // An IPv6 Ethernet frame
+ 
+@@ -177,12 +184,6 @@ void sendPacket(const struct pcapDeviceInfo *iface, int len, const u_char *data)
+         break;
+ 
+     case eL2Prepend: // Add (prepend) L2 header data to packets to host
+-        if (0 == have_eheader) {
+-            // Copy prepared Ethernet header to buf just once
+-            memcpy(buf, &eHeader, sizeof(eHeader));
+-            have_eheader = 1;
+-        }
+-
+         // Copy packet data after local Ethernet header
+         memcpy(buf+sizeof(struct ether_header),data,len);
+ 
+-- 
+2.29.2
+

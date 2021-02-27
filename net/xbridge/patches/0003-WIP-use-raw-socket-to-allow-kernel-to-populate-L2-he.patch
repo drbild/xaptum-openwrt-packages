@@ -1,0 +1,249 @@
+From 0694946b7942ceef873adb4b94382d14705302f0 Mon Sep 17 00:00:00 2001
+From: "David R. Bild" <david.bild@xaptum.com>
+Date: Tue, 2 Mar 2021 23:39:27 -0600
+Subject: [PATCH 3/3] WIP: use raw socket to allow kernel to populate L2 header
+
+---
+ src/xbridge.c | 119 ++++++++++++++++++++++++++++++------------
+ 1 file changed, 85 insertions(+), 34 deletions(-)
+
+diff --git a/src/xbridge.c b/src/xbridge.c
+index 07d0557..3fd4311 100644
+--- a/src/xbridge.c
++++ b/src/xbridge.c
+@@ -47,9 +47,10 @@ const struct in6_addr linkLocalDefaultGatewayIPv6 = {
+ 
+ struct pcapDeviceInfo {
+     const char *name; // Interface to use to inject packets
+-    const char *mac; // Interface to copy MAC address from
++    unsigned char mac[ETH_ALEN];
++    int idx;
+     pcap_t     *descr;
+-    int         fd;
++    int         fd, sd;
+     enum { eL2DoneTouch, eL2Strip, eL2Prepend } l2handling;
+ 
+     struct pcapDeviceInfo *other; // Pointer to other network interface
+@@ -60,8 +61,6 @@ int stats = 0; // dump statistics when set
+ int na = 0; // send NA when set
+ int debug = 1;
+ 
+-struct ether_header eHeader;
+-
+ void signal_handler(int n)
+ {
+     switch (n) {
+@@ -93,11 +92,70 @@ pcap_t* createDesc(const char * const iface, int snaplen, int promisc)
+         exit(EXIT_FAILURE);
+     }
+ 
++    if(0 != pcap_setdirection(descr, PCAP_D_IN)) {
++        LogCrit("pcap_setdirection(): %s", pcap_geterr(descr));
++        exit(EXIT_FAILURE);
++    }
++
+     LogDebug("Attached to network interface %s, snaplen %d", iface, snaplen);
+ 
+     return descr;
+ }
+ 
++int createRaw(const char * const iface) {
++    struct ifreq ifr;
++    int sd, rc, on;
++
++    strncpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name)-1);
++    ifr.ifr_name[sizeof(ifr.ifr_name)-1]='\0';
++
++    sd = socket(AF_INET6, SOCK_RAW, IPPROTO_RAW);
++    if (sd < 0) {
++        LogCrit("socket(): error %d (%s)", errno, strerror(errno));
++        exit(EXIT_FAILURE);
++    }
++
++    on = 1;
++    rc = setsockopt(sd, IPPROTO_IPV6, IPV6_HDRINCL, &on, sizeof(on));
++    if (rc < 0) {
++        LogCrit("setsockopt(): error %d (%s)", errno, strerror(errno));
++        exit(EXIT_FAILURE);
++    }
++
++    rc = setsockopt(sd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof (ifr));
++    if (rc < 0) {
++        LogCrit("setsockopt(): error %d (%s)", errno, strerror(errno));
++        exit(EXIT_FAILURE);
++    }
++
++    return sd;
++}
++
++int getIndex(const char * const iface)
++{
++    struct ifreq ifr;
++
++    int fd = socket(PF_INET, SOCK_STREAM, 0);
++    if (0 > fd) {
++        LogCrit("socket(): error %d (%s)", errno, strerror(errno));
++        exit(EXIT_FAILURE);
++    }
++
++    strncpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name)-1);
++    ifr.ifr_name[sizeof(ifr.ifr_name)-1]='\0';
++
++    if (0 > ioctl(fd, SIOCGIFINDEX, &ifr)) {
++        LogCrit("ioctl(): error %d (%s)", errno, strerror(errno));
++        exit(EXIT_FAILURE);
++    }
++
++    close(fd);
++
++    LogDebug("Interface %s has index %d", iface, ifr.ifr_ifindex);
++
++    return ifr.ifr_ifindex;
++}
++
+ const char * const mac2ascii(const unsigned char *mac)
+ {
+     static char ascii[24]; // Need only 18 bytes, including terminating zero
+@@ -115,7 +173,7 @@ const char * const mac2ascii(const unsigned char *mac)
+     return ascii;
+ }
+ 
+-void getMac(const char * const iface_name, unsigned char *mac, const char * const iface_mac)
++void getMac(const char * const iface, unsigned char *mac)
+ {
+     struct ifreq ifr;
+ 
+@@ -125,7 +183,7 @@ void getMac(const char * const iface_name, unsigned char *mac, const char * cons
+         exit(EXIT_FAILURE);
+     }
+ 
+-    strncpy(ifr.ifr_name, iface_mac, sizeof(ifr.ifr_name)-1);
++    strncpy(ifr.ifr_name, iface, sizeof(ifr.ifr_name)-1);
+     ifr.ifr_name[sizeof(ifr.ifr_name)-1]='\0';
+ 
+     if (0 > ioctl(fd, SIOCGIFHWADDR, &ifr)) {
+@@ -133,13 +191,11 @@ void getMac(const char * const iface_name, unsigned char *mac, const char * cons
+         exit(EXIT_FAILURE);
+     }
+ 
+-    close(fd);
+-
+     for (int i=0; i<6; ++i) {
+         mac[i] = ifr.ifr_hwaddr.sa_data[i];
+     }
+ 
+-    LogDebug("Interface %s: using MAC %s", iface_name, mac2ascii(mac));
++    LogDebug("Interface %s: using MAC %s", iface, mac2ascii(mac));
+ }
+ 
+ void showStats(pcap_t *p, const char *iface)
+@@ -153,8 +209,8 @@ void showStats(pcap_t *p, const char *iface)
+ 
+ void sendPacket(const struct pcapDeviceInfo *iface, int len, const u_char *data)
+ {
+-    static u_char buf[8192];
+-    static int    have_eheader = 0;
++    struct ip6_hdr *ip6;
++    struct sockaddr_in6 dst = {0};
+ 
+     switch (iface->l2handling) {
+     case eL2DoneTouch: // Just pass L2 data along - used in pass-through mode
+@@ -164,13 +220,6 @@ void sendPacket(const struct pcapDeviceInfo *iface, int len, const u_char *data)
+         break;
+ 
+     case eL2Strip: // Strip L2 data when sending packets to enf0
+-        if (0 == have_eheader) {
+-            // Copy prepared Ethernet header to buf just once
+-            memcpy(eHeader.ether_dhost, ((struct ether_header*)data)->ether_shost, 6);
+-            memcpy(buf, &eHeader, sizeof(eHeader));
+-            have_eheader = 1;
+-        }
+-
+         if (ntohs(((struct ether_header*)data)->ether_type) == ETHERTYPE_IPV6) {
+             // An IPv6 Ethernet frame
+ 
+@@ -183,15 +232,18 @@ void sendPacket(const struct pcapDeviceInfo *iface, int len, const u_char *data)
+         }
+         break;
+ 
+-    case eL2Prepend: // Add (prepend) L2 header data to packets to host
+-        // Copy packet data after local Ethernet header
+-        memcpy(buf+sizeof(struct ether_header),data,len);
++    case eL2Prepend: // Use RAW IP sockets to get kernel to prepend correct L2 header
++        // Extract the IPv6 dest address
++        ip6 = (void*) data;
++
++        dst.sin6_family = AF_INET6;
++        dst.sin6_port = 0;
++        dst.sin6_addr = ip6->ip6_dst;
++        dst.sin6_scope_id = iface->idx;
+ 
+         // Then send IPv6 packet data
+-        if (0 != pcap_sendpacket(iface->descr,
+-                                 buf,
+-                                 sizeof(struct ether_header)+len)) {
+-            LogCrit("pcap_sendpacket(): %s", pcap_geterr(iface->descr));
++        if (0 > sendto(iface->sd, data, len, 0, (struct sockaddr*) &dst, sizeof(dst))) {
++            LogCrit("sendto(): error %d (%s)", errno, strerror(errno));
+         }
+         break;
+     }
+@@ -307,7 +359,7 @@ int sendNeighborAdvert(const struct pcapDeviceInfo *iface, const struct in6_addr
+     };
+ 
+     // Copy our MAC address into lladdr
+-    memcpy(&packet.target_lladdr_mac, eHeader.ether_shost, sizeof(packet.target_lladdr_mac));
++    memcpy(&packet.target_lladdr_mac, iface->mac, sizeof(packet.target_lladdr_mac));
+ 
+     // Calculate checksum
+     packet.icmp6.nd_na_cksum = checksum(&ph, sizeof(ph));
+@@ -351,8 +403,8 @@ void callback(u_char *user, const struct pcap_pkthdr *header, const u_char *data
+ 
+ int main(int argc, char **argv)
+ {
+-    struct pcapDeviceInfo host_if = { .name = "usb0", .mac = "usb0", .l2handling = eL2DoneTouch };
+-    struct pcapDeviceInfo net_if = { .name = "wlan0", .mac = "wlan0", .l2handling = eL2DoneTouch };
++    struct pcapDeviceInfo host_if = { .name = "usb0", .l2handling = eL2DoneTouch };
++    struct pcapDeviceInfo net_if = { .name = "wlan0", .l2handling = eL2DoneTouch };
+ 
+     int snaplen = 8192;
+     int opt;
+@@ -366,14 +418,12 @@ int main(int argc, char **argv)
+             break;
+         case 'h':
+             host_if.name = optarg;
+-            host_if.mac = host_if.name;
+             break;
+         case 's':
+             snaplen = atoi(optarg);
+             break;
+         case 'n':
+             net_if.name = optarg;
+-            net_if.mac = net_if.name;
+             break;
+         case 'p':
+             promiscuous = 1;
+@@ -394,15 +444,16 @@ int main(int argc, char **argv)
+     LogInfo("Starting up");
+ 
+     host_if.descr = createDesc(host_if.name, snaplen, 1);
++    host_if.idx = getIndex(host_if.name);
+     host_if.fd = pcap_get_selectable_fd(host_if.descr);
++    getMac(host_if.name, host_if.mac);
+ 
+     net_if.descr = createDesc(net_if.name, snaplen, promiscuous);
++    net_if.idx = getIndex(net_if.name);
+     net_if.fd = pcap_get_selectable_fd(net_if.descr);
+ 
+-    if (eL2DoneTouch != net_if.l2handling) {
+-        getMac(host_if.name, eHeader.ether_shost, host_if.mac);
+-        getMac(net_if.name, eHeader.ether_dhost, net_if.mac);
+-        eHeader.ether_type = htons(ETHERTYPE_IPV6);
++    if (eL2DoneTouch != host_if.l2handling) {
++        host_if.sd = createRaw(host_if.name);
+     }
+ 
+     int maxfd = MAX(host_if.fd,net_if.fd);
+-- 
+2.29.2
+
